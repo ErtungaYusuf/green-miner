@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Green Miner</title>
+<style>
+:root { --bg:#f6f7f4; --panel:#fff; --ink:#1d2420; --muted:#66706a; --line:#e2e5df; --accent:#1f8a4c; --accent-ink:#fff;
+        --soft:#e8f3ec; --bad:#b42318; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111513; --panel:#181d1a; --ink:#e6ebe7; --muted:#94a09a; --line:#2a312d;
+        --accent:#3fbf74; --accent-ink:#0c140f; --soft:#1d2a22; --bad:#f06a5f; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
+main { max-width:820px; margin:0 auto; padding:24px 16px 48px; display:grid; gap:16px; }
+h1 { margin:0; font-size:20px; } h1 span { color:var(--accent); }
+.sub { color:var(--muted); font-size:13px; }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; }
+.big { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.state { font-size:26px; font-weight:650; } .state.on { color:var(--accent); }
+.go { font:inherit; font-size:16px; border:1px solid var(--accent); background:var(--accent); color:var(--accent-ink);
+      border-radius:10px; padding:10px 22px; cursor:pointer; min-width:150px; }
+.go.stop { background:transparent; color:var(--accent); }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; }
+.tile .v { font-size:22px; font-variant-numeric:tabular-nums; } .tile .k { color:var(--muted); font-size:12.5px; }
+.row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+input[type=range] { flex:1; min-width:180px; accent-color:var(--accent); }
+.seg button { font:inherit; border:1px solid var(--line); background:var(--bg); color:var(--ink); padding:7px 14px; cursor:pointer; }
+.seg button:first-child { border-radius:8px 0 0 8px; } .seg button:last-child { border-radius:0 8px 8px 0; }
+.seg button.sel { background:var(--soft); border-color:var(--accent); color:var(--accent); font-weight:600; }
+.msg { font-size:13px; min-height:1.4em; } .msg.bad { color:var(--bad); }
+.mono { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; word-break:break-all; }
+</style>
+</head>
+<body>
+<main>
+  <header><h1><span>Green</span> Miner</h1><div class="sub" id="where">connecting...</div></header>
+
+  <section class="panel big">
+    <div><div class="state" id="state">-</div><div class="sub" id="device"></div></div>
+    <button class="go" id="toggle">Start mining</button>
+  </section>
+
+  <section class="tiles">
+    <div class="panel tile"><div class="v" id="speed">-</div><div class="k">work units per second</div></div>
+    <div class="panel tile"><div class="v" id="blocks">-</div><div class="k">blocks found</div></div>
+    <div class="panel tile"><div class="v" id="shares">-</div><div class="k">shares found (paid even without a block)</div></div>
+    <div class="panel tile"><div class="v" id="balance">-</div><div class="k">balance of the reward address</div></div>
+    <div class="panel tile"><div class="v" id="earned">-</div><div class="k">earned per hour (last 10 minutes)</div></div>
+    <div class="panel tile"><div class="v" id="expected">-</div><div class="k">blocks per hour at this speed and difficulty</div></div>
+  </section>
+
+  <section class="panel">
+    <div class="row"><b>Intensity</b><input type="range" id="intensity" min="5" max="100" step="5"><span id="intval"></span></div>
+    <p class="sub">The share of the time the hardware works; the rest it rests (cooler and quieter, less earned).</p>
+    <div class="row"><b>Device</b><span class="seg"><button id="gpu">GPU</button><button id="cpu">CPU</button></span></div>
+    <p class="sub">Switching to the GPU checks it against the CPU first; a GPU that disagrees is never used.</p>
+    <div class="msg" id="msg"></div>
+  </section>
+
+  <section class="panel">
+    <div class="sub">Reward address</div><div class="mono" id="miner">-</div>
+    <div class="sub" style="margin-top:8px" id="net"></div>
+  </section>
+</main>
+<script>
+"use strict";
+const TOKEN = "{{TOKEN}}";
+const $ = (id) => document.getElementById(id);
+let s = null, dragging = false;
+const grn = (y) => (y / 1e8).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + " GRN";
+async function post(body) {
+  const r = await fetch("/api/mining", { method: "POST", headers: { "Content-Type": "application/json", "X-UI-Token": TOKEN }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({ error: "bad answer" }));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+async function act(body, note) {
+  $("msg").className = "msg"; $("msg").textContent = note || "";
+  try { await post(body); await refresh(); $("msg").textContent = ""; }
+  catch (e) { $("msg").className = "msg bad"; $("msg").textContent = e.message; }
+}
+function render() {
+  $("where").textContent = `node ${s.node} · block ${s.height} · ${s.peers} peers`;
+  $("state").textContent = s.mining ? "Mining" : "Stopped"; $("state").className = "state" + (s.mining ? " on" : "");
+  $("device").textContent = s.mining ? `on the ${s.gpu || "CPU"}, ${s.intensity}% of the time` : `${s.gpu || "CPU"} ready`;
+  $("toggle").textContent = s.mining ? "Stop mining" : "Start mining"; $("toggle").className = "go" + (s.mining ? " stop" : "");
+  $("speed").textContent = s.mining ? s.units_per_second.toFixed(0) : "0";
+  $("blocks").textContent = s.blocks_found; $("shares").textContent = s.shares_found;
+  $("balance").textContent = s.balance !== undefined ? grn(s.balance) : "-";
+  $("earned").textContent = s.earned_per_hour === null || s.earned_per_hour === undefined ? "measuring..." : grn(s.earned_per_hour);
+  $("expected").textContent = s.mining && s.expected_blocks_per_hour !== undefined ? String(s.expected_blocks_per_hour) : "-";
+  if (!dragging) { $("intensity").value = s.intensity; $("intval").textContent = s.intensity + "%"; }
+  $("gpu").className = s.gpu ? "sel" : ""; $("cpu").className = s.gpu ? "" : "sel";
+  $("miner").textContent = s.miner || "this node has no wallet: it cannot mine";
+  $("net").textContent = `difficulty: about ${Math.round(s.units_per_block).toLocaleString()} work units per block (a block every ${s.seconds_per_block} s on the whole network)`;
+}
+async function refresh() {
+  try { const r = await fetch("/api/state"); const d = await r.json(); if (!r.ok) throw new Error(d.error); s = d; render(); }
+  catch (e) { $("where").textContent = e.message || "the miner program does not answer"; }
+}
+$("toggle").onclick = () => act({ on: !s.mining });
+$("intensity").oninput = () => { dragging = true; $("intval").textContent = $("intensity").value + "%"; };
+$("intensity").onchange = async () => { await act({ intensity: Number($("intensity").value) }); dragging = false; };
+$("gpu").onclick = () => act({ gpu: true }, "Checking the GPU against the CPU...");
+$("cpu").onclick = () => act({ gpu: false });
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>
